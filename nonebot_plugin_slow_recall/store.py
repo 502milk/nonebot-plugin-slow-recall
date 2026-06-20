@@ -12,7 +12,7 @@ Scope = Literal["all", "user"]
 class SlowModeRule:
     group_id: int
     scope: Scope
-    limit: int
+    limit: float
     action: SlowModeAction
     user_id: int | None = None
 
@@ -25,7 +25,7 @@ class SlowModeRule:
         return cls(
             group_id=int(payload["group_id"]),
             scope=payload.get("scope", "all"),
-            limit=max(int(payload.get("limit", 1)), 1),
+            limit=max(float(payload.get("limit", 1)), 0.001),
             action=payload.get("action", "recall"),
             user_id=(
                 int(payload["user_id"])

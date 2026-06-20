@@ -12,6 +12,7 @@ from .store import DelayedRecallRule, JsonStore, Scope, SlowModeAction, SlowMode
 
 WINDOW_SECONDS = 60.0
 MIN_RECALL_DELAY = 0.2
+MIN_SLOW_LIMIT = 0.001
 
 
 @dataclass
@@ -43,14 +44,14 @@ class SlowRecallService:
         self,
         group_id: int,
         scope: Scope,
-        limit: int,
+        limit: float,
         action: SlowModeAction,
         user_id: int | None = None,
     ) -> SlowModeRule:
         rule = SlowModeRule(
             group_id=group_id,
             scope=scope,
-            limit=max(limit, 1),
+            limit=max(limit, MIN_SLOW_LIMIT),
             action=action,
             user_id=user_id if scope == "user" else None,
         )
@@ -94,13 +95,14 @@ class SlowRecallService:
 
         now = time.monotonic()
         window = self._window_for(rule, event.user_id)
-        while window and now - window[0] >= WINDOW_SECONDS:
+        window_seconds, capacity = self._slow_window(rule.limit)
+        while window and now - window[0] >= window_seconds:
             window.popleft()
         window.append(now)
 
         result = SlowModeResult(
             rule=rule,
-            exceeded=len(window) > rule.limit,
+            exceeded=len(window) > capacity,
             first_message_at=window[0],
             message_count=len(window),
         )
@@ -111,7 +113,7 @@ class SlowRecallService:
             await self._delete_message(bot, event.message_id)
             return result
 
-        duration = max(int(round(WINDOW_SECONDS - (now - window[0]))), 1)
+        duration = max(int(round(window_seconds - (now - window[0]))), 1)
         await self._mute_member(bot, event.group_id, event.user_id, duration)
         return result
 
@@ -122,6 +124,12 @@ class SlowRecallService:
         task = asyncio.create_task(self._delayed_recall(bot, event.message_id, rule.delay))
         self._delayed_tasks.add(task)
         task.add_done_callback(self._delayed_tasks.discard)
+
+    @staticmethod
+    def _slow_window(limit: float) -> tuple[float, int]:
+        if limit >= 1:
+            return WINDOW_SECONDS, int(limit)
+        return WINDOW_SECONDS / max(limit, MIN_SLOW_LIMIT), 1
 
     def _window_for(self, rule: SlowModeRule, message_user_id: int) -> deque[float]:
         user_id = rule.user_id if rule.scope == "user" else message_user_id

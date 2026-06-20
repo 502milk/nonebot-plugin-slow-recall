@@ -32,7 +32,7 @@ command_matcher = on_message(priority=18, block=False)
 message_matcher = on_message(priority=90, block=False)
 
 TIME_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(秒|秒钟|s|sec|secs|second|seconds)?\s*$", re.IGNORECASE)
-SLOW_RE = re.compile(r"^慢速\s+(全体)?\s*(\d+)\s*(撤回|禁言)?$", re.IGNORECASE)
+SLOW_RE = re.compile(r"^慢速\s+(全体)?\s*(\d+(?:\.\d+)?)\s*(撤回|禁言)?$", re.IGNORECASE)
 SLOW_OFF_RE = re.compile(r"^慢速(?:关闭|停止|关)\s*(全体)?$", re.IGNORECASE)
 SLOW_LIST_RE = re.compile(r"^慢速列表(?:\s*(全体))?$", re.IGNORECASE)
 RECALL_RE = re.compile(r"^延迟撤回\s+(全体)?\s*(.+)$", re.IGNORECASE)
@@ -106,7 +106,8 @@ def _describe_slow_action(action: SlowModeAction) -> str:
 
 def _format_slow_rule(rule: SlowModeRule) -> str:
     target = "全体" if rule.scope == "all" else f"@{rule.user_id}"
-    return f"慢速 {target} {rule.limit} 次/60秒，超限{_describe_slow_action(rule.action)}"
+    limit_text = f"{rule.limit:g}"
+    return f"慢速 {target} {limit_text} 次/60秒，超限{_describe_slow_action(rule.action)}"
 
 
 def _format_recall_rule(rule: DelayedRecallRule) -> str:
@@ -130,7 +131,7 @@ def _filter_rules_by_scope(rules: list, scope: Scope, user_id: int | None) -> li
     ]
 
 
-def _parse_command(message: Message) -> tuple[CommandType, Scope, int | None, int | None, SlowModeAction | None, float | None] | None:
+def _parse_command(message: Message) -> tuple[CommandType, Scope, int | None, float | None, SlowModeAction | None, float | None] | None:
     text = _message_text_without_at(message)
 
     if ALL_LIST_RE.match(text):
@@ -157,7 +158,7 @@ def _parse_command(message: Message) -> tuple[CommandType, Scope, int | None, in
             return None
         action_text = slow_match.group(3) or "撤回"
         action: SlowModeAction = "mute" if action_text == "禁言" else "recall"
-        return "slow_on", scope[0], scope[1], int(slow_match.group(2)), action, None
+        return "slow_on", scope[0], scope[1], float(slow_match.group(2)), action, None
 
     slow_off_match = SLOW_OFF_RE.match(text)
     if slow_off_match:
