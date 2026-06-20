@@ -60,14 +60,18 @@ def _can_manage(bot: Bot, event: GroupMessageEvent) -> bool:
 
 def _extract_target_user(message: Message) -> int | None:
     for segment in message:
-        if segment.type != "at":
+        if segment.type == "at":
+            qq = segment.data.get("qq")
+        elif segment.type == "text":
+            match = re.search(r"\[CQ:at,qq=(\d+)\]", str(segment.data.get("text", "")))
+            qq = match.group(1) if match else None
+        else:
             continue
-        qq = segment.data.get("qq")
         if not qq or qq == "all":
             continue
         try:
             return int(qq)
-        except ValueError:
+        except (TypeError, ValueError):
             return None
     return None
 
@@ -76,7 +80,9 @@ def _message_text_without_at(message: Message) -> str:
     parts: list[str] = []
     for segment in message:
         if segment.type == "text":
-            parts.append(str(segment.data.get("text", "")))
+            text = str(segment.data.get("text", ""))
+            text = re.sub(r"\[CQ:at,qq=\d+\]", " ", text)
+            parts.append(text)
     return " ".join(parts).strip()
 
 
@@ -133,6 +139,9 @@ def _filter_rules_by_scope(rules: list, scope: Scope, user_id: int | None) -> li
 
 def _parse_command(message: Message) -> tuple[CommandType, Scope, int | None, float | None, SlowModeAction | None, float | None] | None:
     text = _message_text_without_at(message)
+    has_invalid_at_text = _extract_target_user(message) is None and re.search(r"@\S+", text)
+    if has_invalid_at_text and (text.startswith("慢速") or text.startswith("延迟撤回")):
+        raise ValueError("指定用户时请使用 QQ 的真实 @")
 
     if ALL_LIST_RE.match(text):
         return "all_list", "all", None, None, None, None
@@ -185,8 +194,8 @@ async def handle_command(bot: Bot, event: Event, matcher: Matcher) -> None:
 
     try:
         parsed = _parse_command(event.message)
-    except ValueError:
-        await matcher.finish("参数格式错误")
+    except ValueError as exc:
+        await matcher.finish(str(exc) or "参数格式错误")
 
     if parsed is None:
         return
