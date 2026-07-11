@@ -44,6 +44,7 @@ class SlowRecallService:
         group_id: int,
         scope: Scope,
         limit: float,
+        window_seconds: float,
         action: SlowModeAction,
         user_id: int | None = None,
     ) -> SlowModeRule:
@@ -53,6 +54,7 @@ class SlowRecallService:
             limit=limit,
             action=action,
             user_id=user_id if scope == "user" else None,
+            window_seconds=window_seconds,
         )
         await self.store.upsert_slow_rule(rule)
         self._clear_window(group_id, scope, user_id)
@@ -89,12 +91,12 @@ class SlowRecallService:
 
     async def apply_slow_mode(self, bot: Bot, event: GroupMessageEvent) -> SlowModeResult | None:
         rule = await self.store.get_slow_rule(event.group_id, event.user_id)
-        if rule is None or rule.limit <= 0:
+        if rule is None or rule.limit <= 0 or rule.window_seconds <= 0:
             return None
 
         now = time.monotonic()
         window = self._window_for(rule, event.user_id)
-        window_seconds, capacity = self._slow_window(rule.limit)
+        window_seconds, capacity = self._slow_window(rule)
         while window and now - window[0] >= window_seconds:
             window.popleft()
         window.append(now)
@@ -125,10 +127,10 @@ class SlowRecallService:
         task.add_done_callback(self._delayed_tasks.discard)
 
     @staticmethod
-    def _slow_window(limit: float) -> tuple[float, int]:
-        if limit >= 1:
-            return WINDOW_SECONDS, int(limit)
-        return WINDOW_SECONDS / limit, 1
+    def _slow_window(rule: SlowModeRule) -> tuple[float, int]:
+        if rule.limit >= 1:
+            return rule.window_seconds, int(rule.limit)
+        return rule.window_seconds / rule.limit, 1
 
     def _window_for(self, rule: SlowModeRule, message_user_id: int) -> deque[float]:
         user_id = rule.user_id if rule.scope == "user" else message_user_id

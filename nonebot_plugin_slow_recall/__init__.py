@@ -32,10 +32,11 @@ command_matcher = on_message(priority=18, block=False)
 message_matcher = on_message(priority=90, block=False)
 
 TIME_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(秒|秒钟|s|sec|secs|second|seconds)?\s*$", re.IGNORECASE)
+SLOW_TIME_UNIT = r"秒|秒钟|s|sec|secs|second|seconds|分钟|分|m|min|mins|minute|minutes|小时|时|h|hr|hrs|hour|hours|天|日|d|day|days"
 SLOW_RE = re.compile(
-    r"^慢速\s+(全体)?\s*(\d+(?:\.\d+)?)(?:\s*"
-    r"(秒|秒钟|s|sec|secs|second|seconds|分钟|分|m|min|mins|minute|minutes|小时|时|h|hr|hrs|hour|hours|天|日|d|day|days)"
-    r")?\s*(撤回禁言|禁言撤回|撤回\+禁言|禁言\+撤回|撤回|禁言)?$",
+    r"^慢速\s+(全体)?\s*(\d+(?:\.\d+)?)(?:\s*((?:\d+(?:\.\d+)?\s*)?(?:"
+    + SLOW_TIME_UNIT
+    + r")))?\s*(撤回禁言|禁言撤回|撤回\+禁言|禁言\+撤回|撤回|禁言)?$",
     re.IGNORECASE,
 )
 SLOW_OFF_RE = re.compile(r"^慢速(?:关闭|停止|关)\s*(全体)?$", re.IGNORECASE)
@@ -107,29 +108,34 @@ def _parse_delay(text: str) -> float:
     return float(match.group(1))
 
 
-def _parse_slow_limit(count_text: str, time_text: str | None) -> float:
+def _parse_slow_limit(count_text: str, time_text: str | None) -> tuple[float, float]:
     count = float(count_text)
     if count <= 0:
-        return count
+        return count, 0
     if time_text is None:
-        raise ValueError("慢速条件格式错误，请使用 数量 时间，例如 5 分钟、2 秒、30 h")
+        raise ValueError("慢速条件格式错误，请使用 数量 时间，例如 5 分钟、2 秒、2 5秒")
 
     seconds = _parse_duration_seconds(time_text)
     if seconds <= 0:
         raise ValueError("慢速时间必须大于 0")
-    return count * 60 / seconds
+    return count, seconds
 
 
 def _parse_duration_seconds(text: str) -> float:
-    unit = text.strip().lower()
+    match = re.match(rf"^\s*(?:(\d+(?:\.\d+)?)\s*)?({SLOW_TIME_UNIT})\s*$", text, re.IGNORECASE)
+    if not match:
+        raise ValueError("慢速时间格式错误，支持 秒、分钟、小时、天 及对应英文缩写")
+
+    value = float(match.group(1) or 1)
+    unit = match.group(2).lower()
     if unit in {"秒", "秒钟", "s", "sec", "secs", "second", "seconds"}:
-        return 1
+        return value
     if unit in {"分钟", "分", "m", "min", "mins", "minute", "minutes"}:
-        return 60
+        return value * 60
     if unit in {"小时", "时", "h", "hr", "hrs", "hour", "hours"}:
-        return 60 * 60
+        return value * 60 * 60
     if unit in {"天", "日", "d", "day", "days"}:
-        return 24 * 60 * 60
+        return value * 24 * 60 * 60
     raise ValueError("慢速时间格式错误，支持 秒、分钟、小时、天 及对应英文缩写")
 
 
@@ -148,7 +154,17 @@ def _describe_slow_action(action: SlowModeAction) -> str:
 def _format_slow_rule(rule: SlowModeRule) -> str:
     target = "全体" if rule.scope == "all" else f"@{rule.user_id}"
     limit_text = f"{rule.limit:g}"
-    return f"慢速 {target} {limit_text} 条/分钟，超限{_describe_slow_action(rule.action)}"
+    return f"慢速 {target} {limit_text} 条/{_format_duration(rule.window_seconds)}，超限{_describe_slow_action(rule.action)}"
+
+
+def _format_duration(seconds: float) -> str:
+    if seconds % (24 * 60 * 60) == 0:
+        return f"{seconds / (24 * 60 * 60):g}天"
+    if seconds % (60 * 60) == 0:
+        return f"{seconds / (60 * 60):g}小时"
+    if seconds % 60 == 0:
+        return f"{seconds / 60:g}分钟"
+    return f"{seconds:g}秒"
 
 
 def _format_recall_rule(rule: DelayedRecallRule) -> str:
@@ -172,28 +188,28 @@ def _filter_rules_by_scope(rules: list, scope: Scope, user_id: int | None) -> li
     ]
 
 
-def _parse_command(message: Message) -> tuple[CommandType, Scope, int | None, float | None, SlowModeAction | None, float | None] | None:
+def _parse_command(message: Message) -> tuple[CommandType, Scope, int | None, float | None, float | None, SlowModeAction | None, float | None] | None:
     text = _message_text_without_at(message)
     has_invalid_at_text = _extract_target_user(message) is None and re.search(r"@\S+", text)
     if has_invalid_at_text and (text.startswith("慢速") or text.startswith("延迟撤回")):
         raise ValueError("指定用户时请使用 QQ 的真实 @")
 
     if ALL_LIST_RE.match(text):
-        return "all_list", "all", None, None, None, None
+        return "all_list", "all", None, None, None, None, None
 
     slow_list_match = SLOW_LIST_RE.match(text)
     if slow_list_match:
         scope = _parse_scope(message, slow_list_match.group(1))
         if scope is None:
             scope = ("all", None)
-        return "slow_list", scope[0], scope[1], None, None, None
+        return "slow_list", scope[0], scope[1], None, None, None, None
 
     recall_list_match = RECALL_LIST_RE.match(text)
     if recall_list_match:
         scope = _parse_scope(message, recall_list_match.group(1))
         if scope is None:
             scope = ("all", None)
-        return "recall_list", scope[0], scope[1], None, None, None
+        return "recall_list", scope[0], scope[1], None, None, None, None
 
     slow_match = SLOW_RE.match(text)
     if slow_match:
@@ -205,14 +221,15 @@ def _parse_command(message: Message) -> tuple[CommandType, Scope, int | None, fl
             action: SlowModeAction = "both"
         else:
             action = "mute" if action_text == "禁言" else "recall"
-        return "slow_on", scope[0], scope[1], _parse_slow_limit(slow_match.group(2), slow_match.group(3)), action, None
+        limit, window_seconds = _parse_slow_limit(slow_match.group(2), slow_match.group(3))
+        return "slow_on", scope[0], scope[1], limit, window_seconds, action, None
 
     slow_off_match = SLOW_OFF_RE.match(text)
     if slow_off_match:
         scope = _parse_scope(message, slow_off_match.group(1))
         if scope is None:
             return None
-        return "slow_off", scope[0], scope[1], None, None, None
+        return "slow_off", scope[0], scope[1], None, None, None, None
 
     recall_match = RECALL_RE.match(text)
     if recall_match:
@@ -220,7 +237,7 @@ def _parse_command(message: Message) -> tuple[CommandType, Scope, int | None, fl
         if scope is None:
             return None
         delay = _parse_delay(recall_match.group(2))
-        return "recall", scope[0], scope[1], None, None, delay
+        return "recall", scope[0], scope[1], None, None, None, delay
 
     return None
 
@@ -241,17 +258,18 @@ async def handle_command(bot: Bot, event: Event, matcher: Matcher) -> None:
     if not _can_manage(bot, event):
         await matcher.finish("你没有管理权限")
 
-    command, scope, user_id, limit, action, delay = parsed
+    command, scope, user_id, limit, window_seconds, action, delay = parsed
     response_text: str
     try:
         if command == "slow_on":
             assert limit is not None
+            assert window_seconds is not None
             assert action is not None
             if limit <= 0:
                 await service.unset_slow_mode(event.group_id, scope, user_id)
                 response_text = f"已关闭慢速模式：{_describe_scope(scope, user_id)}"
             else:
-                rule = await service.set_slow_mode(event.group_id, scope, limit, action, user_id)
+                rule = await service.set_slow_mode(event.group_id, scope, limit, window_seconds, action, user_id)
                 response_text = f"已开启：{_format_slow_rule(rule)}"
         elif command == "slow_off":
             await service.unset_slow_mode(event.group_id, scope, user_id)

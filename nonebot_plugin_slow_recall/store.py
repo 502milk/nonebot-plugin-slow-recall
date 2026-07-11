@@ -15,6 +15,7 @@ class SlowModeRule:
     limit: float
     action: SlowModeAction
     user_id: int | None = None
+    window_seconds: float = 60.0
 
     @property
     def key(self) -> str:
@@ -32,6 +33,7 @@ class SlowModeRule:
                 if payload.get("user_id") is not None
                 else None
             ),
+            window_seconds=float(payload.get("window_seconds", 60.0)),
         )
 
     def to_dict(self) -> dict:
