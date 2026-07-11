@@ -12,7 +12,6 @@ from .store import DelayedRecallRule, JsonStore, Scope, SlowModeAction, SlowMode
 
 WINDOW_SECONDS = 60.0
 MIN_RECALL_DELAY = 0.2
-MIN_SLOW_LIMIT = 0.001
 
 
 @dataclass
@@ -51,7 +50,7 @@ class SlowRecallService:
         rule = SlowModeRule(
             group_id=group_id,
             scope=scope,
-            limit=max(limit, MIN_SLOW_LIMIT),
+            limit=limit,
             action=action,
             user_id=user_id if scope == "user" else None,
         )
@@ -90,7 +89,7 @@ class SlowRecallService:
 
     async def apply_slow_mode(self, bot: Bot, event: GroupMessageEvent) -> SlowModeResult | None:
         rule = await self.store.get_slow_rule(event.group_id, event.user_id)
-        if rule is None:
+        if rule is None or rule.limit <= 0:
             return None
 
         now = time.monotonic()
@@ -129,7 +128,7 @@ class SlowRecallService:
     def _slow_window(limit: float) -> tuple[float, int]:
         if limit >= 1:
             return WINDOW_SECONDS, int(limit)
-        return WINDOW_SECONDS / max(limit, MIN_SLOW_LIMIT), 1
+        return WINDOW_SECONDS / limit, 1
 
     def _window_for(self, rule: SlowModeRule, message_user_id: int) -> deque[float]:
         user_id = rule.user_id if rule.scope == "user" else message_user_id

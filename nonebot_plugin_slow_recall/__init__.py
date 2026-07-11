@@ -14,7 +14,7 @@ __plugin_meta__ = PluginMetadata(
     name="聊天慢速与延迟撤回",
     description="分群控制聊天慢速模式和延迟撤回，支持全体或指定成员规则",
     usage=(
-        "慢速 全体 5条/分钟 撤回 | 慢速 @用户 2条/秒 禁言撤回 | 慢速 全体 0\n"
+        "慢速 全体 5 分钟 撤回 | 慢速 @用户 2 秒 禁言撤回 | 慢速 全体 0\n"
         "慢速列表 | 慢速列表 全体 | 慢速列表 @用户\n"
         "延迟撤回 全体 3秒 | 延迟撤回 @用户 0.5秒 | 延迟撤回 全体 0\n"
         "延迟撤回列表 | 延迟撤回列表 全体 | 延迟撤回列表 @用户\n"
@@ -33,12 +33,9 @@ message_matcher = on_message(priority=90, block=False)
 
 TIME_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(秒|秒钟|s|sec|secs|second|seconds)?\s*$", re.IGNORECASE)
 SLOW_RE = re.compile(
-    r"^慢速\s+(全体)?\s*(.+?)\s*(撤回禁言|禁言撤回|撤回\+禁言|禁言\+撤回|撤回|禁言)?$",
-    re.IGNORECASE,
-)
-SLOW_RATE_RE = re.compile(
-    r"^\s*(\d+(?:\.\d+)?)\s*(?:条|次|消息)?\s*(?:/|每|每\s*)\s*"
-    r"(秒|秒钟|s|sec|secs|second|seconds|分钟|分|m|min|mins|minute|minutes|小时|时|h|hr|hrs|hour|hours)\s*$",
+    r"^慢速\s+(全体)?\s*(\d+(?:\.\d+)?)(?:\s*"
+    r"(秒|秒钟|s|sec|secs|second|seconds|分钟|分|m|min|mins|minute|minutes|小时|时|h|hr|hrs|hour|hours|天|日|d|day|days)"
+    r")?\s*(撤回禁言|禁言撤回|撤回\+禁言|禁言\+撤回|撤回|禁言)?$",
     re.IGNORECASE,
 )
 SLOW_OFF_RE = re.compile(r"^慢速(?:关闭|停止|关)\s*(全体)?$", re.IGNORECASE)
@@ -110,24 +107,30 @@ def _parse_delay(text: str) -> float:
     return float(match.group(1))
 
 
-def _parse_slow_limit(text: str) -> float:
-    value_text = text.strip()
-    try:
-        return float(value_text)
-    except ValueError:
-        pass
+def _parse_slow_limit(count_text: str, time_text: str | None) -> float:
+    count = float(count_text)
+    if count <= 0:
+        return count
+    if time_text is None:
+        raise ValueError("慢速条件格式错误，请使用 数量 时间，例如 5 分钟、2 秒、30 h")
 
-    match = SLOW_RATE_RE.match(value_text)
-    if not match:
-        raise ValueError("慢速条件格式错误，请使用 5、5条/分钟、2条/秒、30/h 等格式")
+    seconds = _parse_duration_seconds(time_text)
+    if seconds <= 0:
+        raise ValueError("慢速时间必须大于 0")
+    return count * 60 / seconds
 
-    count = float(match.group(1))
-    unit = match.group(2).lower()
+
+def _parse_duration_seconds(text: str) -> float:
+    unit = text.strip().lower()
     if unit in {"秒", "秒钟", "s", "sec", "secs", "second", "seconds"}:
-        return count * 60
+        return 1
+    if unit in {"分钟", "分", "m", "min", "mins", "minute", "minutes"}:
+        return 60
     if unit in {"小时", "时", "h", "hr", "hrs", "hour", "hours"}:
-        return count / 60
-    return count
+        return 60 * 60
+    if unit in {"天", "日", "d", "day", "days"}:
+        return 24 * 60 * 60
+    raise ValueError("慢速时间格式错误，支持 秒、分钟、小时、天 及对应英文缩写")
 
 
 def _describe_scope(scope: Scope, user_id: int | None) -> str:
@@ -197,12 +200,12 @@ def _parse_command(message: Message) -> tuple[CommandType, Scope, int | None, fl
         scope = _parse_scope(message, slow_match.group(1))
         if scope is None:
             return None
-        action_text = slow_match.group(3) or "撤回"
+        action_text = slow_match.group(4) or "撤回"
         if "撤回" in action_text and "禁言" in action_text:
             action: SlowModeAction = "both"
         else:
             action = "mute" if action_text == "禁言" else "recall"
-        return "slow_on", scope[0], scope[1], _parse_slow_limit(slow_match.group(2)), action, None
+        return "slow_on", scope[0], scope[1], _parse_slow_limit(slow_match.group(2), slow_match.group(3)), action, None
 
     slow_off_match = SLOW_OFF_RE.match(text)
     if slow_off_match:
