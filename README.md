@@ -1,3 +1,4 @@
+# 本插件GPT含量为99.99%!!!,介意误用!!!~~(感谢gpt,天才程序员的诞生)~~
 # nonebot-plugin-slow-recall
 
 基于 NoneBot2 与 OneBot V11 的群聊慢速模式与延迟撤回插件。
