@@ -14,7 +14,7 @@ __plugin_meta__ = PluginMetadata(
     name="聊天慢速与延迟撤回",
     description="分群控制聊天慢速模式和延迟撤回，支持全体或指定成员规则",
     usage=(
-        "慢速 全体 5 撤回 | 慢速 @用户 3 禁言 | 慢速关闭 全体 | 慢速关闭 @用户\n"
+        "慢速 全体 5条/分钟 撤回 | 慢速 @用户 2条/秒 禁言撤回 | 慢速 全体 0\n"
         "慢速列表 | 慢速列表 全体 | 慢速列表 @用户\n"
         "延迟撤回 全体 3秒 | 延迟撤回 @用户 0.5秒 | 延迟撤回 全体 0\n"
         "延迟撤回列表 | 延迟撤回列表 全体 | 延迟撤回列表 @用户\n"
@@ -32,7 +32,15 @@ command_matcher = on_message(priority=18, block=False)
 message_matcher = on_message(priority=90, block=False)
 
 TIME_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(秒|秒钟|s|sec|secs|second|seconds)?\s*$", re.IGNORECASE)
-SLOW_RE = re.compile(r"^慢速\s+(全体)?\s*(\d+(?:\.\d+)?)\s*(撤回|禁言)?$", re.IGNORECASE)
+SLOW_RE = re.compile(
+    r"^慢速\s+(全体)?\s*(.+?)\s*(撤回禁言|禁言撤回|撤回\+禁言|禁言\+撤回|撤回|禁言)?$",
+    re.IGNORECASE,
+)
+SLOW_RATE_RE = re.compile(
+    r"^\s*(\d+(?:\.\d+)?)\s*(?:条|次|消息)?\s*(?:/|每|每\s*)\s*"
+    r"(秒|秒钟|s|sec|secs|second|seconds|分钟|分|m|min|mins|minute|minutes|小时|时|h|hr|hrs|hour|hours)\s*$",
+    re.IGNORECASE,
+)
 SLOW_OFF_RE = re.compile(r"^慢速(?:关闭|停止|关)\s*(全体)?$", re.IGNORECASE)
 SLOW_LIST_RE = re.compile(r"^慢速列表(?:\s*(全体))?$", re.IGNORECASE)
 RECALL_RE = re.compile(r"^延迟撤回\s+(全体)?\s*(.+)$", re.IGNORECASE)
@@ -102,18 +110,42 @@ def _parse_delay(text: str) -> float:
     return float(match.group(1))
 
 
+def _parse_slow_limit(text: str) -> float:
+    value_text = text.strip()
+    try:
+        return float(value_text)
+    except ValueError:
+        pass
+
+    match = SLOW_RATE_RE.match(value_text)
+    if not match:
+        raise ValueError("慢速条件格式错误，请使用 5、5条/分钟、2条/秒、30/h 等格式")
+
+    count = float(match.group(1))
+    unit = match.group(2).lower()
+    if unit in {"秒", "秒钟", "s", "sec", "secs", "second", "seconds"}:
+        return count * 60
+    if unit in {"小时", "时", "h", "hr", "hrs", "hour", "hours"}:
+        return count / 60
+    return count
+
+
 def _describe_scope(scope: Scope, user_id: int | None) -> str:
     return "全体" if scope == "all" else f"@{user_id}"
 
 
 def _describe_slow_action(action: SlowModeAction) -> str:
-    return "撤回" if action == "recall" else "禁言"
+    if action == "recall":
+        return "撤回"
+    if action == "mute":
+        return "禁言"
+    return "撤回并禁言"
 
 
 def _format_slow_rule(rule: SlowModeRule) -> str:
     target = "全体" if rule.scope == "all" else f"@{rule.user_id}"
     limit_text = f"{rule.limit:g}"
-    return f"慢速 {target} {limit_text} 次/60秒，超限{_describe_slow_action(rule.action)}"
+    return f"慢速 {target} {limit_text} 条/分钟，超限{_describe_slow_action(rule.action)}"
 
 
 def _format_recall_rule(rule: DelayedRecallRule) -> str:
@@ -166,8 +198,11 @@ def _parse_command(message: Message) -> tuple[CommandType, Scope, int | None, fl
         if scope is None:
             return None
         action_text = slow_match.group(3) or "撤回"
-        action: SlowModeAction = "mute" if action_text == "禁言" else "recall"
-        return "slow_on", scope[0], scope[1], float(slow_match.group(2)), action, None
+        if "撤回" in action_text and "禁言" in action_text:
+            action: SlowModeAction = "both"
+        else:
+            action = "mute" if action_text == "禁言" else "recall"
+        return "slow_on", scope[0], scope[1], _parse_slow_limit(slow_match.group(2)), action, None
 
     slow_off_match = SLOW_OFF_RE.match(text)
     if slow_off_match:
@@ -209,8 +244,12 @@ async def handle_command(bot: Bot, event: Event, matcher: Matcher) -> None:
         if command == "slow_on":
             assert limit is not None
             assert action is not None
-            rule = await service.set_slow_mode(event.group_id, scope, limit, action, user_id)
-            response_text = f"已开启：{_format_slow_rule(rule)}"
+            if limit <= 0:
+                await service.unset_slow_mode(event.group_id, scope, user_id)
+                response_text = f"已关闭慢速模式：{_describe_scope(scope, user_id)}"
+            else:
+                rule = await service.set_slow_mode(event.group_id, scope, limit, action, user_id)
+                response_text = f"已开启：{_format_slow_rule(rule)}"
         elif command == "slow_off":
             await service.unset_slow_mode(event.group_id, scope, user_id)
             response_text = f"已关闭慢速模式：{_describe_scope(scope, user_id)}"
@@ -255,10 +294,7 @@ async def handle_group_message(bot: Bot, event: Event) -> None:
     if is_manage_command and _can_manage(bot, event):
         return
 
-    slow_result = await service.apply_slow_mode(bot, event)
-    if slow_result is not None and slow_result.exceeded and slow_result.rule.action == "recall":
-        return
-
+    await service.apply_slow_mode(bot, event)
     await service.schedule_delayed_recall(bot, event)
 
 

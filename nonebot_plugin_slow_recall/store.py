@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
-SlowModeAction = Literal["recall", "mute"]
+SlowModeAction = Literal["recall", "mute", "both"]
 Scope = Literal["all", "user"]
 
 
@@ -26,7 +26,7 @@ class SlowModeRule:
             group_id=int(payload["group_id"]),
             scope=payload.get("scope", "all"),
             limit=max(float(payload.get("limit", 1)), 0.001),
-            action=payload.get("action", "recall"),
+            action=payload.get("action", "recall") if payload.get("action") in {"recall", "mute", "both"} else "recall",
             user_id=(
                 int(payload["user_id"])
                 if payload.get("user_id") is not None

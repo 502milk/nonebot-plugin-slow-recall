@@ -109,12 +109,12 @@ class SlowRecallService:
         if not result.exceeded:
             return result
 
-        if rule.action == "recall":
+        if rule.action in {"recall", "both"}:
             await self._delete_message(bot, event.message_id)
-            return result
 
-        duration = max(int(round(window_seconds - (now - window[0]))), 1)
-        await self._mute_member(bot, event.group_id, event.user_id, duration)
+        if rule.action in {"mute", "both"}:
+            duration = max(int(round(window_seconds - (now - window[0]))), 1)
+            await self._mute_member(bot, event.group_id, event.user_id, duration)
         return result
 
     async def schedule_delayed_recall(self, bot: Bot, event: GroupMessageEvent) -> None:
